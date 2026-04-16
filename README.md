@@ -14,6 +14,7 @@ self-contained, safe to re-run, and documents its own usage via `--help`.
 | --- | --- |
 | [`scripts/ssl/issue-cert.sh`](scripts/ssl/issue-cert.sh) | Issue a Let's Encrypt certificate via certbot + Cloudflare DNS-01 and write a matching nginx SSL snippet. |
 | [`scripts/nginx/create-site.sh`](scripts/nginx/create-site.sh) | Generate an nginx server-block config for a WordPress site, with optional apex-to-www redirect. |
+| [`scripts/wordpress/add-user.sh`](scripts/wordpress/add-user.sh) | Create a WordPress user for one of the sites on this server. Picks a database (interactively or via flag) and invokes wp-cli against the matching install. |
 
 More scripts will land here as they're extracted from runbooks.
 
@@ -190,6 +191,54 @@ With `--redirect-to-www` — three server blocks:
 
 ---
 
+## `add-user.sh`
+
+Creates a WordPress user in one of the sites hosted on this server. The tricky
+part of "just add a row to `wp_users`" is that WordPress password hashing
+changed in 6.8 (phpass → bcrypt with phpass fallback), so rolling the hash in
+shell is fragile. This script delegates to `wp-cli`, which always does the
+right thing for the installed WP version.
+
+### What it does
+
+1. Lists non-system MariaDB databases (or takes `--database`).
+2. Finds the matching WordPress install by grepping `DB_NAME` in every
+   `wp-config.php` under `--webroot-base` (default `/mnt/vdc/www/t4a`).
+3. Detects the webroot owner (`stat` on `wp-config.php`) and runs `wp-cli` as
+   that user — `wp-cli` refuses to run as root by default.
+4. Prompts for any missing username / email / password, or generates a
+   random 24-char password if left blank.
+5. Runs `wp user create` with the chosen role (default `administrator`).
+
+### Usage
+
+```bash
+# Fully interactive — lists databases, prompts for everything
+sudo ./scripts/wordpress/add-user.sh
+
+# CLI args, password auto-generated, skip confirmation
+sudo ./scripts/wordpress/add-user.sh \
+  --database wp_the_chase_project \
+  --user grega \
+  --email grega@example.com \
+  --yes
+```
+
+| Flag | Description |
+| --- | --- |
+| `--database` | Target database. Interactive picker if omitted. |
+| `--user` | WordPress login name. Prompted if omitted. |
+| `--email` | WordPress email. Prompted if omitted. |
+| `--password` | Password. Prompted (hidden) if omitted; leave prompt blank to auto-generate. |
+| `--role` | WordPress role (default `administrator`). |
+| `--webroot-base` | Base dir for site webroots (default `/mnt/vdc/www/t4a`). |
+| `--yes` / `-y` | Skip the final confirmation prompt. |
+
+The script requires `wp-cli` (`wp` on `$PATH`) and `sudo mysql` access via
+unix-socket auth (AlmaLinux/MariaDB default).
+
+---
+
 ## Prerequisites (on the server)
 
 - `certbot` with the `certbot-dns-cloudflare` plugin installed.
@@ -220,10 +269,12 @@ t4a-wordpress-hosting/
 │   │   ├── create-site.sh
 │   │   └── templates/
 │   │       └── site.conf.tmpl
-│   └── ssl/
-│       ├── issue-cert.sh
-│       └── templates/
-│           └── ssl-snippet.conf.tmpl
+│   ├── ssl/
+│   │   ├── issue-cert.sh
+│   │   └── templates/
+│   │       └── ssl-snippet.conf.tmpl
+│   └── wordpress/
+│       └── add-user.sh
 ├── .gitattributes
 ├── .gitignore
 └── README.md
