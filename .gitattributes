@@ -1,0 +1,3 @@
+*.sh      text eol=lf
+*.tmpl    text eol=lf
+*.conf    text eol=lf

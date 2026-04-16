@@ -1,0 +1,24 @@
+# SSL certificate files
+ssl_certificate     /data/certbot/config/live/{{CERT_NAME}}/fullchain.pem;
+ssl_certificate_key /data/certbot/config/live/{{CERT_NAME}}/privkey.pem;
+
+# Modern TLS settings
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers on;
+ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
+
+# Session settings
+ssl_session_cache shared:SSL:10m;
+ssl_session_timeout 10m;
+
+# HSTS - HTTP Strict Transport Security
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+# OCSP stapling
+ssl_stapling on;
+ssl_stapling_verify on;
+resolver 1.1.1.1 8.8.8.8 valid=300s;
+resolver_timeout 5s;
+
+# Diffie-Hellman parameter
+ssl_dhparam /etc/ssl/certs/dhparam.pem;
