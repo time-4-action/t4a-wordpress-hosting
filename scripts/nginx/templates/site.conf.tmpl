@@ -30,6 +30,9 @@ server {
     root {{WEBROOT_BASE}}/{{SLUG}};
     index index.php index.html;
 
+    # Force UTF-8 in Content-Type (fixes mojibake on Slovenian characters etc.)
+    charset utf-8;
+
     # Upload size (WordPress media)
     client_max_body_size 64M;
     client_body_buffer_size 128k;
