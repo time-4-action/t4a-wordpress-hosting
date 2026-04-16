@@ -13,8 +13,22 @@ self-contained, safe to re-run, and documents its own usage via `--help`.
 | Script | Purpose |
 | --- | --- |
 | [`scripts/ssl/issue-cert.sh`](scripts/ssl/issue-cert.sh) | Issue a Let's Encrypt certificate via certbot + Cloudflare DNS-01 and write a matching nginx SSL snippet. |
+| [`scripts/nginx/create-site.sh`](scripts/nginx/create-site.sh) | Generate an nginx server-block config for a WordPress site, with optional apex-to-www redirect. |
 
 More scripts will land here as they're extracted from runbooks.
+
+A typical new-site bring-up uses both, in order:
+
+```bash
+# 1. issue the cert
+sudo ./scripts/ssl/issue-cert.sh --account t4a -d example.com -d www.example.com
+
+# 2. generate the site config
+sudo ./scripts/nginx/create-site.sh --domain example.com --redirect-to-www
+
+# 3. reload nginx
+sudo systemctl reload nginx
+```
 
 ---
 
@@ -107,6 +121,75 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ---
 
+## `create-site.sh`
+
+Generates an nginx server block for a WordPress site from
+[`scripts/nginx/templates/site.conf.tmpl`](scripts/nginx/templates/site.conf.tmpl)
+and drops it into `/etc/nginx/conf.d/<domain>.conf`. The template bundles the
+project's standard WordPress hardening: upload-size limits, FastCGI buffer
+tuning (fixes *"upstream sent too big header"*), security headers, blocks on
+`wp-config.php` / `wp-content/uploads/*.php` / dotfiles, static-asset caching,
+and a `php-fpm` handler via Unix socket.
+
+### What it does
+
+1. Renders the template with your domain, slug, cert name, and log-name values.
+2. Optionally adds apex-to-www redirects (`--redirect-to-www`).
+3. Writes `/etc/nginx/conf.d/<domain>.conf`.
+4. Warns if the matching SSL snippet or the webroot directory are missing.
+5. Validates the full nginx config with `nginx -t`.
+
+### Usage
+
+```bash
+sudo ./scripts/nginx/create-site.sh --domain DOMAIN [options]
+```
+
+| Flag | Description |
+| --- | --- |
+| `--domain` | **Required.** Primary domain, e.g. `example.com`. |
+| `--slug` | Document-root folder name under `--webroot-base`. Defaults to the first label of the domain (e.g. `example.com` → `example`). |
+| `--cert-name` | SSL snippet basename. Resolves to `/etc/nginx/snippets/ssl-<cert-name>.conf`. Defaults to `--domain`. |
+| `--log-name` | Log filename basename under `/var/log/nginx/`. Defaults to `--domain`. |
+| `--webroot-base` | Base directory for document roots. Defaults to `/mnt/vdc/www/t4a`. |
+| `--redirect-to-www` | Redirect apex to `www.DOMAIN` over both HTTP and HTTPS. Requires a cert that covers both names. |
+| `--force` | Overwrite an existing `/etc/nginx/conf.d/<domain>.conf`. |
+
+### Examples
+
+Simple apex-only site:
+
+```bash
+sudo ./scripts/nginx/create-site.sh --domain the-chase-project.com
+```
+
+Apex redirects to www (canonical = `www.example.com`):
+
+```bash
+sudo ./scripts/nginx/create-site.sh --domain example.com --redirect-to-www
+```
+
+Custom slug and cert name (site lives at `/mnt/vdc/www/t4a/mysite`):
+
+```bash
+sudo ./scripts/nginx/create-site.sh \
+  --domain example.com \
+  --slug mysite \
+  --cert-name example.com
+```
+
+### What gets generated
+
+Without `--redirect-to-www` — HTTP → HTTPS on the apex, HTTPS site on the apex.
+
+With `--redirect-to-www` — three server blocks:
+
+1. **`:80` apex + www** → `301` to `https://www.DOMAIN`
+2. **`:443` apex** → `301` to `https://www.DOMAIN`
+3. **`:443 www.DOMAIN`** → serves the WordPress site
+
+---
+
 ## Prerequisites (on the server)
 
 - `certbot` with the `certbot-dns-cloudflare` plugin installed.
@@ -115,7 +198,8 @@ sudo nginx -t && sudo systemctl reload nginx
   both `chmod 600`.
 - Certbot project directories pre-created:
   `/data/certbot/{config,work,logs}`.
-- `nginx` installed with a `snippets/` directory (standard layout).
+- `nginx` installed with `snippets/` and `conf.d/` directories (standard
+  layout), and `php-fpm` listening on `/run/php-fpm/www.sock`.
 - A Diffie-Hellman parameter file at `/etc/ssl/certs/dhparam.pem`. Generate
   once with:
   ```bash
@@ -132,6 +216,10 @@ missing — no silent failures.
 ```
 t4a-wordpress-hosting/
 ├── scripts/
+│   ├── nginx/
+│   │   ├── create-site.sh
+│   │   └── templates/
+│   │       └── site.conf.tmpl
 │   └── ssl/
 │       ├── issue-cert.sh
 │       └── templates/

@@ -1,0 +1,98 @@
+# HTTP → HTTPS redirect
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{HTTP_NAMES}};
+    return 301 https://{{CANONICAL}}$request_uri;
+}
+
+# {{WWW_REDIRECT_START}}
+# HTTPS apex → HTTPS www redirect
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{DOMAIN}};
+
+    include /etc/nginx/snippets/ssl-{{CERT_NAME}}.conf;
+
+    return 301 https://{{CANONICAL}}$request_uri;
+}
+# {{WWW_REDIRECT_END}}
+
+# HTTPS site
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{CANONICAL}};
+
+    include /etc/nginx/snippets/ssl-{{CERT_NAME}}.conf;
+
+    root {{WEBROOT_BASE}}/{{SLUG}};
+    index index.php index.html;
+
+    # Upload size (WordPress media)
+    client_max_body_size 64M;
+    client_body_buffer_size 128k;
+
+    # FastCGI buffer sizes — fixes "upstream sent too big header"
+    fastcgi_buffer_size 32k;
+    fastcgi_buffers 16 16k;
+    fastcgi_busy_buffers_size 64k;
+    fastcgi_temp_file_write_size 64k;
+
+    # Logs
+    access_log /var/log/nginx/{{LOG_NAME}}.access.log;
+    error_log  /var/log/nginx/{{LOG_NAME}}.error.log;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Block access to sensitive files
+    location ~* /(wp-config\.php|readme\.html|license\.txt|wp-config-sample\.php)$ {
+        deny all;
+    }
+
+    # Block PHP execution in uploads (defense against malicious uploads)
+    location ~* /wp-content/uploads/.*\.php$ {
+        deny all;
+    }
+
+    # Block hidden files except .well-known (for Let's Encrypt / ACME)
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    # WordPress permalinks
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # Static asset caching
+    location ~* \.(css|gif|ico|jpeg|jpg|js|png|svg|webp|woff|woff2|ttf|eot|otf|mp4|webm)$ {
+        expires max;
+        log_not_found off;
+        access_log off;
+    }
+
+    location = /favicon.ico { log_not_found off; access_log off; }
+    location = /robots.txt  { log_not_found off; access_log off; allow all; }
+
+    # PHP handler
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTPS on;
+
+        # Per-location buffer override (redundant but explicit)
+        fastcgi_buffer_size 32k;
+        fastcgi_buffers 16 16k;
+        fastcgi_busy_buffers_size 64k;
+
+        fastcgi_read_timeout 300;
+    }
+}
