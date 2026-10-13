@@ -14,7 +14,7 @@ self-contained, safe to re-run, and documents its own usage via `--help`.
 | --- | --- |
 | [`scripts/ssl/issue-cert.sh`](scripts/ssl/issue-cert.sh) | Issue a Let's Encrypt certificate via certbot + Cloudflare DNS-01 and write a matching nginx SSL snippet. |
 | [`scripts/nginx/create-site.sh`](scripts/nginx/create-site.sh) | Generate an nginx server-block config for a WordPress site, with optional apex-to-www redirect. |
-| [`scripts/wordpress/add-user.sh`](scripts/wordpress/add-user.sh) | Create a WordPress user for one of the sites on this server. Picks a database (interactively or via flag) and invokes wp-cli against the matching install. |
+| [`scripts/wordpress/add-user.sh`](scripts/wordpress/add-user.sh) | Create a WordPress user by talking to MariaDB directly. Picks a database, auto-detects the table prefix from the DB, and inserts into `<prefix>users` / `<prefix>usermeta`. |
 
 More scripts will land here as they're extracted from runbooks.
 
@@ -193,30 +193,36 @@ With `--redirect-to-www` — three server blocks:
 
 ## `add-user.sh`
 
-Creates a WordPress user in one of the sites hosted on this server. The tricky
-part of "just add a row to `wp_users`" is that WordPress password hashing
-changed in 6.8 (phpass → bcrypt with phpass fallback), so rolling the hash in
-shell is fragile. This script delegates to `wp-cli`, which always does the
-right thing for the installed WP version.
+Creates a WordPress user by talking to MariaDB directly — no webroot hunting,
+no `wp-cli` dependency. Everything it needs (list of databases, table prefix,
+duplicate-login check) comes from the DB itself. PHP is used only to compute
+a WordPress-compatible password hash.
 
 ### What it does
 
-1. Lists non-system MariaDB databases (or takes `--database`).
-2. Finds the matching WordPress install by grepping `DB_NAME` in every
-   `wp-config.php` under `--webroot-base` (default `/mnt/vdc/www/t4a`).
-3. Detects the webroot owner (`stat` on `wp-config.php`) and runs `wp-cli` as
-   that user — `wp-cli` refuses to run as root by default.
-4. Prompts for any missing username / email / password, or generates a
-   random 24-char password if left blank.
-5. Runs `wp user create` with the chosen role (default `administrator`).
+1. Lists non-system MariaDB databases (or takes `--database`), presenting a
+   numbered picker.
+2. Finds the table prefix from inside the chosen database: looks for a
+   `*_users` table that has a matching `*_usermeta` sibling (e.g. `tgnh_users`
+   + `tgnh_usermeta` → prefix `tgnh_`). Refuses to proceed on suspicious
+   prefixes.
+3. Prompts (hidden) for any missing `--user` / `--email` / `--password`.
+   Blank password auto-generates 24 alphanumeric chars.
+4. Hashes the password with a portable-phpass PHP snippet (produces a `$P$…`
+   hash). Every WP release since 2008 accepts this format; WP 6.8+ silently
+   re-hashes to bcrypt on the user's first successful login.
+5. Checks no row with this `user_login` or `user_email` already exists, then
+   inserts into `<prefix>users` and `<prefix>usermeta` (capabilities,
+   user_level, nickname, rich_editing, syntax_highlighting, admin_color,
+   show_admin_bar_front) in a single transaction.
 
 ### Usage
 
 ```bash
-# Fully interactive — lists databases, prompts for everything
+# Fully interactive — picks DB from a numbered list, prompts for everything
 sudo ./scripts/wordpress/add-user.sh
 
-# CLI args, password auto-generated, skip confirmation
+# All flags, auto-generated password, skip confirmation
 sudo ./scripts/wordpress/add-user.sh \
   --database wp_the_chase_project \
   --user grega \
@@ -227,15 +233,14 @@ sudo ./scripts/wordpress/add-user.sh \
 | Flag | Description |
 | --- | --- |
 | `--database` | Target database. Interactive picker if omitted. |
-| `--user` | WordPress login name. Prompted if omitted. |
+| `--user` | WordPress login name. Prompted if omitted. Max 60 chars, `[A-Za-z0-9._@-]`. |
 | `--email` | WordPress email. Prompted if omitted. |
 | `--password` | Password. Prompted (hidden) if omitted; leave prompt blank to auto-generate. |
-| `--role` | WordPress role (default `administrator`). |
-| `--webroot-base` | Base dir for site webroots (default `/mnt/vdc/www/t4a`). |
+| `--role` | `administrator` (default), `editor`, `author`, `contributor`, or `subscriber`. |
 | `--yes` / `-y` | Skip the final confirmation prompt. |
 
-The script requires `wp-cli` (`wp` on `$PATH`) and `sudo mysql` access via
-unix-socket auth (AlmaLinux/MariaDB default).
+The script requires `sudo mysql` access via unix-socket auth
+(AlmaLinux/MariaDB default) and a working `php` binary on `$PATH`.
 
 ---
 
